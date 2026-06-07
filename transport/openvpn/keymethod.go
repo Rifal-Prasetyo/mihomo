@@ -153,7 +153,10 @@ func DeriveClientKeyMaterial(sources KeySource2, clientSession, serverSession Se
 	}, nil
 }
 
-func InstallScriptOptionsString(proto, cipher, auth string, compLZO string) string {
+func InstallScriptOptionsString(proto, cipher, auth string, compLZO string, tunMTU int) string {
+	if tunMTU <= 0 {
+		tunMTU = 1500
+	}
 	protoName := "UDPv4"
 	if proto == ProtoTCP {
 		protoName = "TCPv4_CLIENT"
@@ -162,13 +165,13 @@ func InstallScriptOptionsString(proto, cipher, auth string, compLZO string) stri
 	if cipher == CipherAES256GCM || cipher == CipherAES256CBC || cipher == CipherChaCha20Poly1305 {
 		keysize = "256"
 	}
-	mtu := "1550"
+	linkMTU := tunMTU + 50
 	comp := ""
 	if compLZO == CompLzoYes {
-		mtu = "1544"
+		linkMTU = tunMTU + 44
 		comp = "comp-lzo,"
 	}
-	return fmt.Sprintf("V4,dev-type tun,link-mtu %s,tun-mtu 1500,proto %s,%scipher %s,auth %s,keysize %s,key-method 2,tls-client", mtu, protoName, comp, cipher, auth, keysize)
+	return fmt.Sprintf("V4,dev-type tun,link-mtu %d,tun-mtu %d,proto %s,%scipher %s,auth %s,keysize %s,key-method 2,tls-client", linkMTU, tunMTU, protoName, comp, cipher, auth, keysize)
 }
 
 func InstallScriptPeerInfo(cipher string, compLZO string) string {

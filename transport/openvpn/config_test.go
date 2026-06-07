@@ -157,7 +157,20 @@ func TestClientConfigRequiresAuth(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected missing auth error")
 	}
-	if !strings.Contains(err.Error(), "cert+key or username") {
+	if !strings.Contains(err.Error(), "requires either cert+key or username") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClientConfigAuthUserPassMissingPassword(t *testing.T) {
+	cfg := yamlStyleConfig()
+	cfg.Username = "user"
+	cfg.Password = ""
+	err := cfg.Prepare()
+	if err == nil {
+		t.Fatal("expected missing password error")
+	}
+	if !strings.Contains(err.Error(), "auth-user-pass requires both username and password") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

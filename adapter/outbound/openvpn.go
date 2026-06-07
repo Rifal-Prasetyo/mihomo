@@ -54,18 +54,46 @@ type OpenVPNOption struct {
 	Cert        string `proxy:"cert,omitempty"`
 	Key         string `proxy:"key,omitempty"`
 	TLSCrypt    string `proxy:"tls-crypt,omitempty"`
+	TLSAuth     string `proxy:"tls-auth,omitempty"`
 	Username    string `proxy:"username,omitempty"`
 	Password    string `proxy:"password,omitempty"`
 	Ping        int    `proxy:"ping,omitempty"`
 	PingRestart int    `proxy:"ping-restart,omitempty"`
 	MTU         int    `proxy:"mtu,omitempty"`
+	TunMTU      int    `proxy:"tun-mtu,omitempty"`
+	FastIO      bool   `proxy:"fast-io,omitempty"`
+	PersistKey  bool   `proxy:"persist-key,omitempty"`
+	PersistTun  bool   `proxy:"persist-tun,omitempty"`
+	NoBind      bool   `proxy:"nobind,omitempty"`
 	UDP         bool   `proxy:"udp,omitempty"`
 
 	RemoteDnsResolve bool     `proxy:"remote-dns-resolve,omitempty"`
 	Dns              []string `proxy:"dns,omitempty"`
+
+	RemoteRandom   bool   `proxy:"remote-random,omitempty"`
+	Pull           bool   `proxy:"pull,omitempty"`
+	TLSClient      bool   `proxy:"tls-client,omitempty"`
+	NSCertType     string `proxy:"ns-cert-type,omitempty"`
+	VerifyX509Name string `proxy:"verify-x509-name,omitempty"`
+	KeyDirection   int    `proxy:"key-direction,omitempty"`
+	RouteMethod    string `proxy:"route-method,omitempty"`
+	RouteDelay     int    `proxy:"route-delay,omitempty"`
+	Fragment       int    `proxy:"fragment,omitempty"`
+	MSSFix         int    `proxy:"mssfix,omitempty"`
+	Verb           int    `proxy:"verb,omitempty"`
+	SndBuf         int    `proxy:"sndbuf,omitempty"`
+	RcvBuf         int    `proxy:"rcvbuf,omitempty"`
 }
 
 func NewOpenVPN(option OpenVPNOption) (*OpenVPN, error) {
+	mtu := option.MTU
+	if mtu == 0 {
+		mtu = option.TunMTU
+	}
+	if mtu == 0 {
+		mtu = 1500
+	}
+
 	cfg := &ovpn.ClientConfig{
 		RemoteHost:   option.Server,
 		RemotePort:   uint16(option.Port),
@@ -78,10 +106,26 @@ func NewOpenVPN(option OpenVPNOption) (*OpenVPN, error) {
 		Cert:         []byte(option.Cert),
 		Key:          []byte(option.Key),
 		TLSCrypt:     []byte(option.TLSCrypt),
+		TLSAuth:      []byte(option.TLSAuth),
+		NSCertType:   option.NSCertType,
 		Username:     option.Username,
 		Password:     option.Password,
 		PingInterval: time.Duration(option.Ping) * time.Second,
 		PingRestart:  time.Duration(option.PingRestart) * time.Second,
+		MTU:          mtu,
+		
+		RemoteRandom:   option.RemoteRandom,
+		Pull:           option.Pull,
+		TLSClient:      option.TLSClient,
+		VerifyX509Name: option.VerifyX509Name,
+		KeyDirection:   option.KeyDirection,
+		RouteMethod:    option.RouteMethod,
+		RouteDelay:     option.RouteDelay,
+		Fragment:       option.Fragment,
+		MSSFix:         option.MSSFix,
+		Verb:           option.Verb,
+		SndBuf:         option.SndBuf,
+		RcvBuf:         option.RcvBuf,
 	}
 	if err := cfg.Prepare(); err != nil {
 		return nil, err
@@ -254,11 +298,7 @@ func (o *OpenVPN) run(ctx context.Context) (wireguard.Device, resolver.Resolver,
 	}
 	log.Debugln("[OpenVPN](%s) handshake complete: prefixes=%v routes=%v peer-id=%d dns=%v redirect=%t block-ipv6=%t", o.name, push.Prefixes, push.Routes, push.PeerID, push.DNS, push.Redirect, push.BlockIPv6)
 
-	mtu := o.option.MTU
-	if mtu == 0 {
-		mtu = 1500
-	}
-	tunDevice, err := wireguard.NewStackDevice(push.Prefixes, uint32(mtu))
+	tunDevice, err := wireguard.NewStackDevice(push.Prefixes, uint32(o.config.MTU))
 	if err != nil {
 		_ = client.Close()
 		return nil, nil, E.Cause(err, "create OpenVPN stack device")
@@ -326,6 +366,21 @@ func openVPNPrefixesHas6(prefixes []netip.Prefix) bool {
 	return false
 }
 
+func (o *OpenVPN) setSocketBuffers(conn net.Conn) {
+	type bufConn interface {
+		SetReadBuffer(bytes int) error
+		SetWriteBuffer(bytes int) error
+	}
+	if bc, ok := conn.(bufConn); ok {
+		if o.config.SndBuf > 0 {
+			_ = bc.SetWriteBuffer(o.config.SndBuf)
+		}
+		if o.config.RcvBuf > 0 {
+			_ = bc.SetReadBuffer(o.config.RcvBuf)
+		}
+	}
+}
+
 func (o *OpenVPN) openPacketIO(ctx context.Context) (ovpn.PacketIO, error) {
 	switch o.config.Proto {
 	case ovpn.ProtoUDP:
@@ -333,12 +388,14 @@ func (o *OpenVPN) openPacketIO(ctx context.Context) (ovpn.PacketIO, error) {
 		if err != nil {
 			return nil, err
 		}
+		o.setSocketBuffers(conn)
 		return ovpn.NewDatagramPacketIO(conn), nil
 	case ovpn.ProtoTCP:
 		conn, err := o.dialer.DialContext(ctx, "tcp", o.addr)
 		if err != nil {
 			return nil, err
 		}
+		o.setSocketBuffers(conn)
 		return ovpn.NewTCPPacketIO(conn), nil
 	default:
 		return nil, fmt.Errorf("unsupported openvpn proto %q", o.config.Proto)

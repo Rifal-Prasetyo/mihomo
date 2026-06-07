@@ -1202,6 +1202,13 @@ proxies: # socks5
     # ping: 10 # 默认值为 0
     # ping-restart: 60 # 默认值为 0
     # mtu: 1500
+    # tun-mtu: 1500 # 与 mtu 效果一致，通常从 .ovpn 中直接复制时使用
+    # fast-io: true # performance flag, accepted and ignored
+    # persist-key: true # accepted and ignored
+    # persist-tun: true # accepted and ignored
+    # nobind: true # accepted and ignored
+    # ns-cert-type: server # 验证服务器证书 Netscape 类型，可选值为 client / server
+    # verify-x509-name: "Server name-prefix" # 验证服务器证书 CN 或 Subject，例如："Server name-prefix"、"Server name"、"DN subject"
     udp: true
     # 一个出站代理的标识。当值不为空时，将使用指定的 proxy 发出连接
     # dialer-proxy: "ss1"

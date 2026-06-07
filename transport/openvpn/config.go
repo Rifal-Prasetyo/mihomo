@@ -43,17 +43,33 @@ type ClientConfig struct {
 	Auth       string
 	CompLZO    string
 
-	CA       []byte
-	Cert     []byte
-	Key      []byte
-	TLSCrypt []byte
-
-	Username string
-	Password string
+	CA         []byte
+	Cert       []byte
+	Key        []byte
+	TLSAuth    []byte
+	TLSAuthKey []byte
+	NSCertType string
+	Password   string
+	Username   string
 
 	PingInterval time.Duration
 	PingRestart  time.Duration
+	MTU          int
 
+	RemoteRandom   bool
+	Pull           bool
+	TLSClient      bool
+	VerifyX509Name string
+	KeyDirection   int
+	RouteMethod    string
+	RouteDelay     int
+	Fragment       int
+	MSSFix         int
+	Verb           int
+	SndBuf         int
+	RcvBuf         int
+
+	TLSCrypt    []byte
 	TLSCryptKey []byte
 }
 
@@ -133,13 +149,20 @@ func (c *ClientConfig) Prepare() error {
 	if err := c.ValidateInstallScriptSubset(); err != nil {
 		return err
 	}
+	if len(bytes.TrimSpace(c.TLSAuth)) > 0 {
+		key, err := DecodeStaticKey(c.TLSAuth)
+		if err != nil {
+			return fmt.Errorf("parse tls-auth key: %w", err)
+		}
+		c.TLSAuthKey = key
+	}
 	if len(bytes.TrimSpace(c.TLSCrypt)) > 0 {
 		key, err := DecodeStaticKey(c.TLSCrypt)
 		if err != nil {
 			return fmt.Errorf("parse tls-crypt key: %w", err)
 		}
 		c.TLSCryptKey = key
-	}
+	}	
 	return nil
 }
 
@@ -172,6 +195,7 @@ func (c *ClientConfig) ValidateInstallScriptSubset() error {
 	if block, _ := pem.Decode(c.CA); block == nil {
 		return errors.New("inline <ca> block is not PEM")
 	}
+	// Updated validation (allows cert+key together with username/password)
 	hasCert := len(bytes.TrimSpace(c.Cert)) > 0 || len(bytes.TrimSpace(c.Key)) > 0
 	if hasCert {
 		if len(bytes.TrimSpace(c.Cert)) == 0 || len(bytes.TrimSpace(c.Key)) == 0 {
@@ -183,7 +207,13 @@ func (c *ClientConfig) ValidateInstallScriptSubset() error {
 		if block, _ := pem.Decode(c.Key); block == nil {
 			return errors.New("inline <key> block is not PEM")
 		}
-	} else if strings.TrimSpace(c.Username) == "" {
+	}
+	// Username/password optional, may be used together with cert
+	if strings.TrimSpace(c.Username) != "" {
+		if strings.TrimSpace(c.Password) == "" {
+			return errors.New("openvpn auth-user-pass requires both username and password")
+		}
+	} else if !hasCert {
 		return errors.New("openvpn requires either cert+key or username (auth-user-pass)")
 	}
 	if c.PingInterval < 0 {

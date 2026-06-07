@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/asn1"
 	"errors"
 	"fmt"
 	"io"
@@ -101,7 +102,7 @@ func (c *Client) Handshake(ctx context.Context) (*PushReply, error) {
 	}
 
 	clientRecord, err := NewClientKeyMethod2Record(
-		InstallScriptOptionsString(c.config.Proto, c.config.Cipher, c.config.Auth, c.config.CompLZO),
+		InstallScriptOptionsString(c.config.Proto, c.config.Cipher, c.config.Auth, c.config.CompLZO, c.config.MTU),
 		InstallScriptPeerInfo(c.config.Cipher, c.config.CompLZO),
 		strings.TrimSpace(c.config.Username),
 		c.config.Password,
@@ -335,7 +336,16 @@ func (c *Client) tlsConfig() (*tls.Config, error) {
 			Intermediates: intermediates,
 			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		if err := verifyX509Name(cs.PeerCertificates[0], c.config.VerifyX509Name); err != nil {
+			return err
+		}
+		if err := verifyNSCertType(cs.PeerCertificates[0], c.config.NSCertType); err != nil {
+			return err
+		}
+		return nil
 	}
 	cfg := &tls.Config{
 		InsecureSkipVerify: true,
@@ -351,6 +361,106 @@ func (c *Client) tlsConfig() (*tls.Config, error) {
 		cfg.Certificates = []tls.Certificate{cert}
 	}
 	return cfg, nil
+}
+
+func verifyX509Name(cert *x509.Certificate, verifyStr string) error {
+	if verifyStr == "" {
+		return nil
+	}
+	var name, matchType string
+	if strings.HasSuffix(verifyStr, " name-prefix") {
+		name = strings.TrimSuffix(verifyStr, " name-prefix")
+		matchType = "name-prefix"
+	} else if strings.HasSuffix(verifyStr, " name") {
+		name = strings.TrimSuffix(verifyStr, " name")
+		matchType = "name"
+	} else if strings.HasSuffix(verifyStr, " subject") {
+		name = strings.TrimSuffix(verifyStr, " subject")
+		matchType = "subject"
+	} else {
+		name = verifyStr
+		matchType = "name" // default
+	}
+
+	name = strings.Trim(name, `"'`)
+	cn := cert.Subject.CommonName
+	dn := cert.Subject.String()
+
+	switch matchType {
+	case "name-prefix":
+		if !strings.HasPrefix(cn, name) {
+			return fmt.Errorf("X509 subject CN %q does not start with prefix %q", cn, name)
+		}
+	case "name":
+		if cn != name {
+			return fmt.Errorf("X509 subject CN %q does not match %q", cn, name)
+		}
+	case "subject":
+		dnNormalized := strings.ToLower(dn)
+		nameNormalized := strings.ToLower(name)
+		if !strings.Contains(dnNormalized, nameNormalized) && !strings.Contains(strings.ToLower(toSlashFormat(cert)), nameNormalized) {
+			return fmt.Errorf("X509 DN %q does not match %q", dn, name)
+		}
+	}
+	return nil
+}
+
+func toSlashFormat(cert *x509.Certificate) string {
+	var parts []string
+	for _, c := range cert.Subject.Country {
+		parts = append(parts, "C="+c)
+	}
+	for _, s := range cert.Subject.Province {
+		parts = append(parts, "ST="+s)
+	}
+	for _, l := range cert.Subject.Locality {
+		parts = append(parts, "L="+l)
+	}
+	for _, o := range cert.Subject.Organization {
+		parts = append(parts, "O="+o)
+	}
+	for _, ou := range cert.Subject.OrganizationalUnit {
+		parts = append(parts, "OU="+ou)
+	}
+	if cert.Subject.CommonName != "" {
+		parts = append(parts, "CN="+cert.Subject.CommonName)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "/" + strings.Join(parts, "/")
+}
+
+func verifyNSCertType(cert *x509.Certificate, nsCertType string) error {
+	if nsCertType == "" {
+		return nil
+	}
+	nsCertType = strings.ToLower(strings.TrimSpace(nsCertType))
+	var netscapeCertTypeOID = asn1.ObjectIdentifier{2, 16, 840, 1, 113730, 1, 1}
+	var found bool
+	for _, ext := range cert.Extensions {
+		if ext.Id.Equal(netscapeCertTypeOID) {
+			found = true
+			var bitString asn1.BitString
+			if _, err := asn1.Unmarshal(ext.Value, &bitString); err != nil {
+				return fmt.Errorf("failed to unmarshal Netscape cert type extension: %w", err)
+			}
+			if nsCertType == "server" {
+				if len(bitString.Bytes) == 0 || (bitString.Bytes[0]&0x40) == 0 {
+					return errors.New("certificate is not a Netscape server certificate")
+				}
+			} else if nsCertType == "client" {
+				if len(bitString.Bytes) == 0 || (bitString.Bytes[0]&0x80) == 0 {
+					return errors.New("certificate is not a Netscape client certificate")
+				}
+			}
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("Netscape cert type extension not found in certificate (required: %s)", nsCertType)
+	}
+	return nil
 }
 
 var _ net.Conn = (*ControlConn)(nil)
